@@ -269,8 +269,8 @@ class CleaningScheduleApp(ctk.CTk):
             )
             
             message = client.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=4000,
+                model="claude-opus-4-20250514",
+                max_tokens=8000,
                 messages=[
                     {
                         "role": "user",
@@ -285,30 +285,30 @@ class CleaningScheduleApp(ctk.CTk):
                             },
                             {
                                 "type": "text",
-                                "text": """この清掃スケジュール表を解析して、JSON形式で出力してください。
+                                "text": """この清掃スケジュール表のすべてのデータを解析して、完全なJSON形式で出力してください。
 
-以下の形式で出力してください：
+【絶対厳守】
+1. 表のすべての行を漏らさず出力してください（サンプルではなく全データ）
+2. 説明文や注釈は一切含めず、純粋なJSONのみを出力してください
+3. 「部分的な例」や「最初の数行のみ」といった省略は絶対にしないでください
+
+【認識すべき項目】
+- 左側の列：階、場所、作業品目、材質、作業面積、頻度/周期、年間回数
+- 上部の日付列：1, 2, 3, ... 21（以上）
+- 各セルの清掃頻度：1/D、2/W、3/M、1/月、空白など
+
+【出力形式】
 {
-  "title": "表のタイトル",
-  "headers": ["列1", "列2", "列3", ...],
+  "title": "清掃食器仕様書",
+  "columns": ["階", "場所", "作業品目", "材質", "作業面積", "頻度/周期", "年間回数", "1/9", "2/9", "3/9", ...],
   "rows": [
-    {
-      "column_name_1": "値1",
-      "column_name_2": "値2",
-      ...
-    }
-  ],
-  "merged_cells": [
-    {"range": "A1:E1", "value": "セルの値"}
-  ],
-  "styles": {
-    "header_bg": "黒",
-    "header_fg": "白"
-  }
+    {"階": "1F", "場所": "東側", "作業品目": "事務室の清掃", "材質": "タイルカーペット", "作業面積": "49.48", "頻度/周期": "3/週", "年間回数": "", "1/9": "", "2/9": "", "3/9": "3/W", ...},
+    {"階": "1F", "場所": "北側", ...},
+    ...表のすべての行...
+  ]
 }
 
-表の構造、セル結合、スタイル情報も含めてください。
-JSON形式のみを返してください（説明文は不要）。"""
+注意：JSON以外のテキスト（説明、コメント、注釈など）は一切含めないでください。"""
                             }
                         ]
                     }
@@ -317,6 +317,14 @@ JSON形式のみを返してください（説明文は不要）。"""
             
             # レスポンスからJSONを抽出
             response_text = message.content[0].text
+            
+            # デバッグ用：レスポンスをファイルに保存
+            try:
+                with open('claude_response.json', 'w', encoding='utf-8') as f:
+                    f.write(response_text)
+                print(f"Claude response saved to claude_response.json")
+            except:
+                pass
             
             # JSONの抽出（```json ``` で囲まれている場合に対応）
             if "```json" in response_text:
@@ -327,6 +335,14 @@ JSON形式のみを返してください（説明文は不要）。"""
                 json_start = response_text.find("```") + 3
                 json_end = response_text.find("```", json_start)
                 response_text = response_text[json_start:json_end].strip()
+            
+            # JSONオブジェクトのみを抽出（余分なテキストを除去）
+            # 最初の { から最後の } までを抽出
+            json_start_bracket = response_text.find('{')
+            json_end_bracket = response_text.rfind('}')
+            
+            if json_start_bracket != -1 and json_end_bracket != -1:
+                response_text = response_text[json_start_bracket:json_end_bracket+1]
             
             table_data = json.loads(response_text)
             return table_data
@@ -341,54 +357,72 @@ JSON形式のみを返してください（説明文は不要）。"""
             ws = wb.active
             ws.title = "清掃スケジュール"
             
+            current_row = 1
+            
             # タイトル行（セル結合）
             if 'title' in table_data:
-                ws['A1'] = table_data['title']
-                ws.merge_cells('A1:E1')
-                ws['A1'].font = Font(size=14, bold=True, color='FFFFFF')
-                ws['A1'].fill = PatternFill(start_color='000000', end_color='000000', fill_type='solid')
-                ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
+                num_cols = len(table_data.get('columns', []))
+                if num_cols > 0:
+                    ws['A1'] = table_data['title']
+                    end_col = chr(64 + min(num_cols, 26))  # 最大Z列まで
+                    ws.merge_cells(f'A1:{end_col}1')
+                    ws['A1'].font = Font(size=14, bold=True, color='FFFFFF')
+                    ws['A1'].fill = PatternFill(start_color='000000', end_color='000000', fill_type='solid')
+                    ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
+                    current_row += 1
             
             # ヘッダー行
-            if 'headers' in table_data:
-                for col_idx, header in enumerate(table_data['headers'], start=1):
-                    cell = ws.cell(row=2, column=col_idx, value=header)
-                    cell.font = Font(bold=True)
+            columns = table_data.get('columns', table_data.get('headers', []))
+            if columns:
+                for col_idx, header in enumerate(columns, start=1):
+                    cell = ws.cell(row=current_row, column=col_idx, value=header)
+                    cell.font = Font(bold=True, size=10)
                     cell.fill = PatternFill(start_color='D3D3D3', end_color='D3D3D3', fill_type='solid')
-                    cell.alignment = Alignment(horizontal='center', vertical='center')
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
                     cell.border = Border(
                         left=Side(style='thin'),
                         right=Side(style='thin'),
                         top=Side(style='thin'),
                         bottom=Side(style='thin')
                     )
+                current_row += 1
             
             # データ行
             if 'rows' in table_data:
-                for row_idx, row_data in enumerate(table_data['rows'], start=3):
-                    for col_idx, header in enumerate(table_data.get('headers', []), start=1):
+                for row_data in table_data['rows']:
+                    for col_idx, header in enumerate(columns, start=1):
                         value = row_data.get(header, '')
-                        cell = ws.cell(row=row_idx, column=col_idx, value=value)
-                        cell.alignment = Alignment(horizontal='left', vertical='center')
+                        cell = ws.cell(row=current_row, column=col_idx, value=value)
+                        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
                         cell.border = Border(
                             left=Side(style='thin'),
                             right=Side(style='thin'),
                             top=Side(style='thin'),
                             bottom=Side(style='thin')
                         )
+                    current_row += 1
             
             # 列幅を自動調整
-            for col in ws.columns:
+            for column_cells in ws.columns:
                 max_length = 0
-                column = col[0].column_letter
-                for cell in col:
+                column_letter = None
+                for cell in column_cells:
                     try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(str(cell.value))
+                        # 結合されたセルをスキップ
+                        if hasattr(cell, 'column_letter'):
+                            if column_letter is None:
+                                column_letter = cell.column_letter
+                            if cell.value:
+                                cell_length = len(str(cell.value))
+                                if cell_length > max_length:
+                                    max_length = cell_length
                     except:
                         pass
-                adjusted_width = min(max_length + 2, 50)
-                ws.column_dimensions[column].width = adjusted_width
+                
+                # 列幅を設定
+                if column_letter and max_length > 0:
+                    adjusted_width = min(max_length + 2, 50)
+                    ws.column_dimensions[column_letter].width = adjusted_width
             
             # 保存
             timestamp = Path(self.image_path).stem
