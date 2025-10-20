@@ -263,7 +263,10 @@ class CleaningScheduleApp(ctk.CTk):
     def analyze_with_claude(self, image_data):
         """Claude APIで画像を解析"""
         try:
-            client = anthropic.Anthropic(api_key=self.api_key)
+            # Anthropic クライアントを初期化
+            client = anthropic.Anthropic(
+                api_key=self.api_key
+            )
             
             message = client.messages.create(
                 model="claude-3-5-sonnet-20241022",
