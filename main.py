@@ -10,6 +10,7 @@ import sys
 import json
 import base64
 import threading
+import io
 from pathlib import Path
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
@@ -18,12 +19,12 @@ import anthropic
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
+import fitz  # PyMuPDF
 
 # アプリケーション設定
 APP_TITLE = "清掃スケジュール Excel変換ツール"
 APP_VERSION = "1.0.0"
 CONFIG_FILE = "config.json"
-DEFAULT_SAVE_DIR = str(Path.home() / "Desktop")
 
 # CustomTkinter テーマ設定
 ctk.set_appearance_mode("light")
@@ -38,13 +39,16 @@ class CleaningScheduleApp(ctk.CTk):
         
         # ウィンドウ設定
         self.title(APP_TITLE)
-        self.geometry("800x600")
+        self.geometry("900x750")
         self.resizable(True, True)
+        self.minsize(700, 600)  # 最小サイズを設定
         
         # 変数初期化
         self.image_path = None
         self.image_display = None
         self.api_key = None
+        self.is_pdf = False
+        self.pdf_page_number = 1
         
         # 設定読み込み
         self.load_config()
@@ -86,10 +90,10 @@ class CleaningScheduleApp(ctk.CTk):
         )
         title_label.pack(pady=(0, 20))
         
-        # 画像選択ボタン
+        # ファイル選択ボタン
         select_btn = ctk.CTkButton(
             main_frame,
-            text="📁 画像ファイルを選択",
+            text="ファイルを選択",
             command=self.select_image,
             font=ctk.CTkFont(size=16),
             height=40
@@ -102,7 +106,7 @@ class CleaningScheduleApp(ctk.CTk):
         
         self.preview_label = ctk.CTkLabel(
             preview_frame,
-            text="画像が選択されていません",
+            text="ファイルが選択されていません",
             font=ctk.CTkFont(size=14)
         )
         self.preview_label.pack(expand=True)
@@ -129,14 +133,34 @@ class CleaningScheduleApp(ctk.CTk):
         )
         self.status_label.pack(pady=5)
         
+        # PDFページ番号入力（初期は非表示）
+        self.page_frame = ctk.CTkFrame(main_frame)
+        self.page_frame.pack(pady=5)
+        self.page_frame.pack_forget()  # 初期は非表示
+        
+        page_label = ctk.CTkLabel(
+            self.page_frame,
+            text="PDFページ番号:",
+            font=ctk.CTkFont(size=12)
+        )
+        page_label.pack(side="left", padx=5)
+        
+        self.page_entry = ctk.CTkEntry(
+            self.page_frame,
+            width=100,
+            placeholder_text="1"
+        )
+        self.page_entry.pack(side="left", padx=5)
+        self.page_entry.insert(0, "1")
+        
         # ボタンフレーム
-        button_frame = ctk.CTkFrame(main_frame)
-        button_frame.pack(pady=10)
+        self.button_frame = ctk.CTkFrame(main_frame)
+        self.button_frame.pack(pady=10)
         
         # 変換開始ボタン
         self.convert_btn = ctk.CTkButton(
-            button_frame,
-            text="🚀 Excel変換開始",
+            self.button_frame,
+            text="Excel変換開始",
             command=self.start_conversion,
             font=ctk.CTkFont(size=16, weight="bold"),
             height=40,
@@ -145,20 +169,22 @@ class CleaningScheduleApp(ctk.CTk):
         )
         self.convert_btn.pack(side="left", padx=5)
         
-        # 設定ボタン
+        # Claude APIキー設定ボタン
         settings_btn = ctk.CTkButton(
-            button_frame,
-            text="⚙️ 設定",
+            self.button_frame,
+            text="Claude APIキー設定",
             command=self.open_settings,
             font=ctk.CTkFont(size=14),
             height=40,
-            width=100
+            width=200
         )
         settings_btn.pack(side="left", padx=5)
     
     def select_image(self):
-        """画像ファイルを選択"""
+        """画像ファイルまたはPDFを選択"""
         filetypes = [
+            ("画像・PDFファイル", "*.jpg *.jpeg *.png *.pdf"),
+            ("PDFファイル", "*.pdf"),
             ("画像ファイル", "*.jpg *.jpeg *.png"),
             ("JPEGファイル", "*.jpg *.jpeg"),
             ("PNGファイル", "*.png"),
@@ -166,17 +192,31 @@ class CleaningScheduleApp(ctk.CTk):
         ]
         
         filepath = filedialog.askopenfilename(
-            title="清掃スケジュール画像を選択",
+            title="清掃スケジュール画像またはPDFを選択",
             filetypes=filetypes,
             initialdir=str(Path.home())
         )
         
         if filepath:
             self.image_path = filepath
-            self.display_image(filepath)
-            self.filename_label.configure(text=os.path.basename(filepath))
+            
+            # PDFかどうかを判定
+            self.is_pdf = filepath.lower().endswith('.pdf')
+            
+            if self.is_pdf:
+                # PDFの場合はページ番号入力欄を表示（ボタンフレームの前に挿入）
+                self.page_frame.pack(before=self.button_frame, pady=5)
+                self.display_pdf_preview(filepath)
+                self.filename_label.configure(text=f"PDF: {os.path.basename(filepath)}")
+                self.status_label.configure(text="PDFを選択しました（ページ番号を指定してください）")
+            else:
+                # 画像の場合はページ番号入力欄を非表示
+                self.page_frame.pack_forget()
+                self.display_image(filepath)
+                self.filename_label.configure(text=os.path.basename(filepath))
+                self.status_label.configure(text="画像を選択しました")
+            
             self.convert_btn.configure(state="normal")
-            self.status_label.configure(text="画像を選択しました")
     
     def display_image(self, filepath):
         """画像をプレビュー表示"""
@@ -184,8 +224,8 @@ class CleaningScheduleApp(ctk.CTk):
             # 画像を読み込み
             img = Image.open(filepath)
             
-            # プレビューサイズに調整（最大400x300）
-            max_width, max_height = 400, 300
+            # プレビューサイズに調整（最大600x450）
+            max_width, max_height = 600, 450
             img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
             
             # PhotoImageに変換
@@ -195,8 +235,75 @@ class CleaningScheduleApp(ctk.CTk):
             self.preview_label.configure(image=photo, text="")
             self.preview_label.image = photo  # 参照を保持
             
+            # ウィンドウサイズを調整（画像の高さに応じて）
+            self.adjust_window_size(img.height)
+            
         except Exception as e:
             messagebox.showerror("エラー", f"画像の読み込みに失敗しました:\n{e}")
+    
+    def display_pdf_preview(self, filepath):
+        """PDFの最初のページをプレビュー表示"""
+        try:
+            # PDFを開く
+            doc = fitz.open(filepath)
+            
+            # ページ数を取得
+            page_count = len(doc)
+            
+            # 最初のページを画像に変換
+            page = doc[0]
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))  # 150% ズーム
+            
+            # PIL Imageに変換
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            
+            # プレビューサイズに調整（最大600x450）
+            max_width, max_height = 600, 450
+            img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+            
+            # PhotoImageに変換
+            photo = ImageTk.PhotoImage(img)
+            
+            # 表示を更新
+            self.preview_label.configure(image=photo, text="")
+            self.preview_label.image = photo  # 参照を保持
+            
+            doc.close()
+            
+            # ページ数情報を表示
+            self.filename_label.configure(
+                text=f"PDF: {os.path.basename(filepath)} （全{page_count}ページ）"
+            )
+            
+            # ウィンドウサイズを調整（画像の高さに応じて）
+            self.adjust_window_size(img.height)
+            
+        except Exception as e:
+            messagebox.showerror("エラー", f"PDFの読み込みに失敗しました:\n{e}")
+    
+    def adjust_window_size(self, image_height):
+        """画像の高さに応じてウィンドウサイズを調整"""
+        # 必要な高さを計算
+        # タイトル(60) + ボタン(60) + プレビュー(image_height+20) + ファイル名(30) + 
+        # プログレスバー(40) + ステータス(30) + PDFページ(40) + ボタンフレーム(60) + 余白(100)
+        required_height = 60 + 60 + (image_height + 20) + 30 + 40 + 30 + 40 + 60 + 100
+        
+        # 現在のウィンドウサイズを取得
+        current_width = self.winfo_width()
+        current_height = self.winfo_height()
+        
+        # 必要に応じてウィンドウサイズを拡大
+        if required_height > current_height:
+            # 最大サイズを画面の90%に制限
+            screen_height = self.winfo_screenheight()
+            max_height = int(screen_height * 0.9)
+            new_height = min(required_height, max_height)
+            
+            # ウィンドウサイズを更新
+            self.geometry(f"{current_width}x{new_height}")
+            
+            # UIを更新
+            self.update_idletasks()
     
     def open_settings(self):
         """設定ダイアログを開く"""
@@ -231,13 +338,61 @@ class CleaningScheduleApp(ctk.CTk):
         thread = threading.Thread(target=self.conversion_process, daemon=True)
         thread.start()
     
+    def pdf_page_to_image_base64(self, pdf_path, page_number):
+        """PDFの指定ページを画像（Base64）に変換"""
+        try:
+            doc = fitz.open(pdf_path)
+            
+            # ページ番号の検証（1-indexed → 0-indexed）
+            page_index = page_number - 1
+            if page_index < 0 or page_index >= len(doc):
+                raise ValueError(f"ページ番号が範囲外です（1〜{len(doc)}ページの範囲で指定してください）")
+            
+            # 指定ページを取得
+            page = doc[page_index]
+            
+            # 高解像度で画像に変換（300dpiに相当する倍率）
+            zoom = 300 / 72  # PDFは72dpi、300dpiにするには約4.17倍
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+            
+            # PIL Imageに変換
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            
+            # JPEGとして保存（メモリ上）
+            img_byte_arr = io.BytesIO()
+            img.save(img_byte_arr, format='JPEG', quality=95)
+            img_byte_arr.seek(0)
+            
+            # Base64エンコード
+            image_data = base64.standard_b64encode(img_byte_arr.read()).decode('utf-8')
+            
+            doc.close()
+            return image_data
+            
+        except Exception as e:
+            raise Exception(f"PDF変換エラー: {str(e)}")
+    
     def conversion_process(self):
         """変換処理（別スレッド）"""
         try:
             # ステップ1: 画像読み込み
-            self.update_progress(0.1, "画像を読み込んでいます...")
-            with open(self.image_path, 'rb') as f:
-                image_data = base64.standard_b64encode(f.read()).decode('utf-8')
+            if self.is_pdf:
+                # PDFの場合
+                self.update_progress(0.1, "PDFを読み込んでいます...")
+                
+                # ページ番号を取得
+                try:
+                    page_num = int(self.page_entry.get())
+                except ValueError:
+                    raise Exception("有効なページ番号を入力してください")
+                
+                # PDFを画像に変換
+                image_data = self.pdf_page_to_image_base64(self.image_path, page_num)
+            else:
+                # 画像ファイルの場合
+                self.update_progress(0.1, "画像を読み込んでいます...")
+                with open(self.image_path, 'rb') as f:
+                    image_data = base64.standard_b64encode(f.read()).decode('utf-8')
             
             # ステップ2: Claude APIで解析
             self.update_progress(0.3, "Claude APIで解析中...")
@@ -269,7 +424,7 @@ class CleaningScheduleApp(ctk.CTk):
             )
             
             message = client.messages.create(
-                model="claude-opus-4-20250514",
+                model="claude-sonnet-4-5",
                 max_tokens=8000,
                 messages=[
                     {
@@ -285,30 +440,29 @@ class CleaningScheduleApp(ctk.CTk):
                             },
                             {
                                 "type": "text",
-                                "text": """この清掃スケジュール表のすべてのデータを解析して、完全なJSON形式で出力してください。
+                                "text": """この画像に含まれる表データを解析して、表形式のJSON（columns と rows）で出力してください。
 
-【絶対厳守】
-1. 表のすべての行を漏らさず出力してください（サンプルではなく全データ）
-2. 説明文や注釈は一切含めず、純粋なJSONのみを出力してください
-3. 「部分的な例」や「最初の数行のみ」といった省略は絶対にしないでください
+【重要】以下のJSON形式を必ず守ってください：
+- トップレベルのキーは "title", "columns", "rows" のみ
+- "columns" は列名の配列
+- "rows" は各行のデータをオブジェクトの配列として表現
 
-【認識すべき項目】
-- 左側の列：階、場所、作業品目、材質、作業面積、頻度/周期、年間回数
-- 上部の日付列：1, 2, 3, ... 21（以上）
-- 各セルの清掃頻度：1/D、2/W、3/M、1/月、空白など
+【必須要件】
+1. 表のすべての行・列を漏らさず出力（省略禁止）
+2. 説明文やコメントは一切含めず、純粋なJSONのみ出力
+3. コードブロック（```json）は使用しないでください
 
-【出力形式】
+【出力例】
 {
-  "title": "清掃食器仕様書",
-  "columns": ["階", "場所", "作業品目", "材質", "作業面積", "頻度/周期", "年間回数", "1/9", "2/9", "3/9", ...],
+  "title": "タイトル",
+  "columns": ["列1", "列2", "列3", "列4"],
   "rows": [
-    {"階": "1F", "場所": "東側", "作業品目": "事務室の清掃", "材質": "タイルカーペット", "作業面積": "49.48", "頻度/周期": "3/週", "年間回数": "", "1/9": "", "2/9": "", "3/9": "3/W", ...},
-    {"階": "1F", "場所": "北側", ...},
-    ...表のすべての行...
+    {"列1": "値1", "列2": "値2", "列3": "値3", "列4": "値4"},
+    {"列1": "値5", "列2": "値6", "列3": "値7", "列4": "値8"}
   ]
 }
 
-注意：JSON以外のテキスト（説明、コメント、注釈など）は一切含めないでください。"""
+上記の形式で、画像内のすべてのデータを含むJSONを出力してください。"""
                             }
                         ]
                     }
@@ -320,9 +474,11 @@ class CleaningScheduleApp(ctk.CTk):
             
             # デバッグ用：レスポンスをファイルに保存
             try:
-                with open('claude_response.json', 'w', encoding='utf-8') as f:
+                debug_dir = Path("debug_output")
+                debug_dir.mkdir(exist_ok=True)
+                with open(debug_dir / 'claude_response.txt', 'w', encoding='utf-8') as f:
                     f.write(response_text)
-                print(f"Claude response saved to claude_response.json")
+                print(f"Claude response saved to debug_output/claude_response.txt")
             except:
                 pass
             
@@ -344,7 +500,25 @@ class CleaningScheduleApp(ctk.CTk):
             if json_start_bracket != -1 and json_end_bracket != -1:
                 response_text = response_text[json_start_bracket:json_end_bracket+1]
             
+            # JSONパース
             table_data = json.loads(response_text)
+            
+            # データ構造の検証
+            if 'columns' not in table_data or 'rows' not in table_data:
+                raise Exception(
+                    f"不正なJSON形式：'columns'と'rows'が必要です。\n"
+                    f"受け取ったキー: {list(table_data.keys())}\n"
+                    f"詳細は debug_output/claude_response.txt を確認してください。"
+                )
+            
+            if not isinstance(table_data['columns'], list) or not isinstance(table_data['rows'], list):
+                raise Exception("'columns'と'rows'は配列である必要があります。")
+            
+            if len(table_data['rows']) == 0:
+                raise Exception("データ行が0件です。画像を確認してください。")
+            
+            print(f"解析成功: {len(table_data['columns'])}列 x {len(table_data['rows'])}行")
+            
             return table_data
             
         except Exception as e:
@@ -424,21 +598,21 @@ class CleaningScheduleApp(ctk.CTk):
                     adjusted_width = min(max_length + 2, 50)
                     ws.column_dimensions[column_letter].width = adjusted_width
             
-            # 保存
-            timestamp = Path(self.image_path).stem
-            output_path = os.path.join(DEFAULT_SAVE_DIR, f"{timestamp}_変換結果.xlsx")
+            # 保存先：選択したファイルと同じディレクトリ
+            source_path = Path(self.image_path)
+            output_dir = source_path.parent  # 元ファイルと同じディレクトリ
+            base_name = source_path.stem  # 拡張子なしのファイル名
+            
+            output_path = output_dir / f"{base_name}_変換結果.xlsx"
             
             # 同名ファイルがある場合は番号を追加
             counter = 1
-            while os.path.exists(output_path):
-                output_path = os.path.join(
-                    DEFAULT_SAVE_DIR,
-                    f"{timestamp}_変換結果_{counter}.xlsx"
-                )
+            while output_path.exists():
+                output_path = output_dir / f"{base_name}_変換結果_{counter}.xlsx"
                 counter += 1
             
-            wb.save(output_path)
-            return output_path
+            wb.save(str(output_path))
+            return str(output_path)
             
         except Exception as e:
             raise Exception(f"Excel生成エラー: {str(e)}")
