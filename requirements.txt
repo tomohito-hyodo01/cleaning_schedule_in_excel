@@ -1,6 +1,20 @@
-customtkinter==5.2.1
-Pillow==10.1.0
-anthropic>=0.71.0
-openpyxl==3.1.2
-python-dotenv==1.0.0
+# Core dependencies
+numpy>=1.24.0
+opencv-python>=4.8.0
+Pillow>=10.0.0
+openpyxl>=3.1.0
+
+# OCR engines
+paddleocr>=2.7.0
+paddlepaddle>=2.5.0
+pytesseract>=0.3.10
+
+# GUI
+PySide6>=6.6.0
+
+# Packaging
+pyinstaller>=6.0.0
+
+# Utility
+tqdm>=4.66.0
 

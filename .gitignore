@@ -1,15 +1,9 @@
-# API Key を含む設定ファイル
-config.json
-
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-env/
-venv/
-ENV/
 build/
 develop-eggs/
 dist/
@@ -26,6 +20,11 @@ wheels/
 .installed.cfg
 *.egg
 
+# Virtual Environment
+venv/
+ENV/
+env/
+
 # IDE
 .vscode/
 .idea/
@@ -37,6 +36,23 @@ wheels/
 .DS_Store
 Thumbs.db
 
+# Project specific
+debug_output/
+*.xlsx
+!清掃スケジュール_変換結果.xlsx
+config.json
+*.spec
+
 # Logs
 *.log
+
+# PaddleOCR cache
+.paddleocr/
+
+# Test coverage
+.coverage
+htmlcov/
+
+# Pytest
+.pytest_cache/
 
